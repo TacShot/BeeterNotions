@@ -156,25 +156,7 @@ enum NotionWorkspaceImporter {
     private static func parseHTMLNote(from url: URL, parentID: UUID?, preferredCourse: String) throws -> NoteDocument {
         let html = try String(contentsOf: url, encoding: .utf8)
         let title = extractTitle(from: html) ?? cleanName(url.deletingPathExtension().lastPathComponent)
-        var blocks: [NoteBlock] = [.heading(title)]
-
-        let callouts = extractTagContents(named: "blockquote", from: html).map(stripHTML).filter { !$0.isEmpty }
-        blocks.append(contentsOf: callouts.map(NoteBlock.callout))
-
-        let headings = extractTagContents(named: "h2", from: html).map(stripHTML).filter { !$0.isEmpty && $0 != title }
-        blocks.append(contentsOf: headings.map(NoteBlock.heading))
-
-        let paragraphs = extractTagContents(named: "p", from: html).map(stripHTML).filter { !$0.isEmpty }
-        blocks.append(contentsOf: paragraphs.map(NoteBlock.paragraph))
-
-        let listItems = extractTagContents(named: "li", from: html).map(stripHTML).filter { !$0.isEmpty }
-        if !listItems.isEmpty {
-            blocks.append(.bulletedList(listItems))
-        }
-
-        let codeBlocks = extractTagContents(named: "pre", from: html).map(stripHTML).filter { !$0.isEmpty }
-        blocks.append(contentsOf: codeBlocks.map { .code($0, language: "text") })
-        blocks.append(contentsOf: extractTables(from: html))
+        var blocks = orderedHTMLBlocks(from: html, title: title)
 
         if blocks.count == 1 {
             let fallback = stripHTML(html)
@@ -187,7 +169,7 @@ enum NotionWorkspaceImporter {
         let inferred = inferProperties(
             from: title,
             metadata: [:],
-            bodyText: paragraphs.joined(separator: "\n"),
+            bodyText: stripHTML(html),
             preferredCourse: preferredCourse,
             containerName: cleanName(url.deletingLastPathComponent().lastPathComponent)
         )
@@ -224,6 +206,7 @@ enum NotionWorkspaceImporter {
         var blocks: [NoteBlock] = []
         var paragraphBuffer: [String] = []
         var listBuffer: [String] = []
+        var tableBuffer: [String] = []
         var codeFenceLanguage = ""
         var codeFenceLines: [String] = []
         var inCodeFence = false
@@ -244,6 +227,17 @@ enum NotionWorkspaceImporter {
             listBuffer.removeAll()
         }
 
+        func flushTable() {
+            if tableBuffer.count >= 2 {
+                let headers = markdownTableCells(from: tableBuffer[0])
+                let rows = tableBuffer.dropFirst(2).map(markdownTableCells)
+                if !headers.isEmpty {
+                    blocks.append(.table(headers: headers, rows: rows))
+                }
+            }
+            tableBuffer.removeAll()
+        }
+
         for rawLine in lines {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
 
@@ -262,9 +256,20 @@ enum NotionWorkspaceImporter {
             if line.hasPrefix("```") {
                 flushParagraph()
                 flushList()
+                flushTable()
                 inCodeFence = true
                 codeFenceLanguage = String(line.dropFirst(3)).trimmingCharacters(in: .whitespacesAndNewlines)
                 continue
+            }
+
+            if line.hasPrefix("|"),
+               lines.indices.contains(lines.firstIndex(of: rawLine) ?? 0) {
+                flushParagraph()
+                flushList()
+                tableBuffer.append(line)
+                continue
+            } else {
+                flushTable()
             }
 
             if line.hasPrefix("# ") && blocks.isEmpty {
@@ -285,6 +290,7 @@ enum NotionWorkspaceImporter {
             if line == "---" {
                 flushParagraph()
                 flushList()
+                flushTable()
                 blocks.append(.divider())
                 continue
             }
@@ -292,6 +298,7 @@ enum NotionWorkspaceImporter {
             if line.hasPrefix("# ") {
                 flushParagraph()
                 flushList()
+                flushTable()
                 blocks.append(.heading(String(line.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)))
                 continue
             }
@@ -299,6 +306,7 @@ enum NotionWorkspaceImporter {
             if line.hasPrefix("## ") || line.hasPrefix("### ") {
                 flushParagraph()
                 flushList()
+                flushTable()
                 let heading = line.replacingOccurrences(of: "^#{2,3}\\s*", with: "", options: .regularExpression)
                 blocks.append(.heading(heading))
                 continue
@@ -313,6 +321,7 @@ enum NotionWorkspaceImporter {
             if line.hasPrefix("!["), let imagePath = markdownLinkTarget(from: line) {
                 flushParagraph()
                 flushList()
+                flushTable()
                 let decodedPath = imagePath.removingPercentEncoding ?? imagePath
                 let resolved = url.deletingLastPathComponent().appendingPathComponent(decodedPath)
                 if let payload = try copyAttachment(resolved) {
@@ -325,6 +334,7 @@ enum NotionWorkspaceImporter {
             if line.isEmpty {
                 flushParagraph()
                 flushList()
+                flushTable()
                 continue
             }
 
@@ -333,8 +343,7 @@ enum NotionWorkspaceImporter {
 
         flushParagraph()
         flushList()
-
-        blocks = normalizeMarkdownTables(in: blocks, rawLines: lines)
+        flushTable()
 
         if blocks.isEmpty {
             blocks = [.heading(title), .paragraph("Imported from Notion Markdown export")]
@@ -368,39 +377,6 @@ enum NotionWorkspaceImporter {
         )
 
         return (note, importedFilesCount)
-    }
-
-    private static func normalizeMarkdownTables(in blocks: [NoteBlock], rawLines: [String]) -> [NoteBlock] {
-        var output: [NoteBlock] = []
-        var index = 0
-
-        while index < rawLines.count {
-            let trimmed = rawLines[index].trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("|"),
-               index + 1 < rawLines.count,
-               rawLines[index + 1].contains("| ---") || rawLines[index + 1].contains("|---") {
-                let headers = markdownTableCells(from: trimmed)
-                index += 2
-                var rows: [[String]] = []
-                while index < rawLines.count {
-                    let rowTrimmed = rawLines[index].trimmingCharacters(in: .whitespaces)
-                    guard rowTrimmed.hasPrefix("|") else { break }
-                    rows.append(markdownTableCells(from: rowTrimmed))
-                    index += 1
-                }
-                if !headers.isEmpty {
-                    output.append(.table(headers: headers, rows: rows))
-                }
-                continue
-            }
-            index += 1
-        }
-
-        if output.isEmpty {
-            return blocks
-        }
-
-        return blocks.filter { $0.type != .table } + output
     }
 
     private static func markdownTableCells(from line: String) -> [String] {
@@ -527,6 +503,67 @@ enum NotionWorkspaceImporter {
         }
     }
 
+    private static func orderedHTMLBlocks(from html: String, title: String) -> [NoteBlock] {
+        guard let bodyRange = html.range(of: "(?is)<body\\b[^>]*>(.*)</body>", options: .regularExpression),
+              let regex = try? NSRegularExpression(
+                pattern: #"(?is)<(h1|h2|h3|p|blockquote|pre|table|ul|ol)\b[^>]*>(.*?)</\1>"#
+              ) else {
+            return [.heading(title)]
+        }
+
+        let bodyHTML = String(html[bodyRange]).replacingOccurrences(of: "(?is)^.*?<body\\b[^>]*>|</body>.*$", with: "", options: .regularExpression)
+        let nsRange = NSRange(bodyHTML.startIndex..<bodyHTML.endIndex, in: bodyHTML)
+        var blocks: [NoteBlock] = [.heading(title)]
+
+        for match in regex.matches(in: bodyHTML, range: nsRange) {
+            guard let tagRange = Range(match.range(at: 1), in: bodyHTML),
+                  let contentRange = Range(match.range(at: 2), in: bodyHTML) else { continue }
+            let tag = String(bodyHTML[tagRange]).lowercased()
+            let content = String(bodyHTML[contentRange])
+
+            switch tag {
+            case "h1":
+                let heading = stripHTML(content)
+                if !heading.isEmpty, heading != title {
+                    blocks.append(.heading(heading))
+                }
+            case "h2", "h3":
+                let heading = stripHTML(content)
+                if !heading.isEmpty {
+                    blocks.append(.heading(heading))
+                }
+            case "p":
+                let paragraph = stripHTML(content)
+                if !paragraph.isEmpty {
+                    blocks.append(.paragraph(paragraph))
+                }
+            case "blockquote":
+                let callout = stripHTML(content)
+                if !callout.isEmpty {
+                    blocks.append(.callout(callout))
+                }
+            case "pre":
+                let snippet = stripHTMLPreservingLines(content)
+                if !snippet.isEmpty {
+                    blocks.append(.code(snippet, language: "text"))
+                }
+            case "table":
+                if let tableBlock = extractTables(from: "<table>\(content)</table>").first {
+                    blocks.append(tableBlock)
+                }
+            case "ul", "ol":
+                let items = extractTagContents(named: "li", from: content).map(stripHTML).filter { !$0.isEmpty }
+                if !items.isEmpty {
+                    blocks.append(.bulletedList(items))
+                }
+            default:
+                break
+            }
+        }
+
+        return blocks
+    }
+
     private static func stripHTML(_ value: String) -> String {
         var result = value.replacingOccurrences(of: "(?is)<br\\s*/?>", with: "\n", options: .regularExpression)
         result = result.replacingOccurrences(of: "(?is)<[^>]+>", with: " ", options: .regularExpression)
@@ -535,6 +572,13 @@ enum NotionWorkspaceImporter {
         result = result.replacingOccurrences(of: "&lt;", with: "<")
         result = result.replacingOccurrences(of: "&gt;", with: ">")
         result = result.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func stripHTMLPreservingLines(_ value: String) -> String {
+        var result = value.replacingOccurrences(of: "(?is)<br\\s*/?>", with: "\n", options: .regularExpression)
+        result = result.replacingOccurrences(of: "(?is)</p>", with: "\n", options: .regularExpression)
+        result = result.replacingOccurrences(of: "(?is)<[^>]+>", with: "", options: .regularExpression)
         return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 

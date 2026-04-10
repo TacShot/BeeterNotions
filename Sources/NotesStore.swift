@@ -22,6 +22,7 @@ final class NotesStore: ObservableObject {
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private var persistTask: Task<Void, Never>?
 
     init() {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -48,14 +49,16 @@ final class NotesStore: ObservableObject {
                 notes = vaultNotes
             }
 
-            selectedNoteID = notes.first(where: { !$0.isInTrash })?.id
-            openSelectedInTabs()
+            selectedNoteID = nil
+            openTabIDs = []
+            secondarySelectedNoteID = nil
             rebuildIndex()
         } catch {
             notes = Self.sampleNotes()
             folders = []
-            selectedNoteID = notes.first?.id
-            openSelectedInTabs()
+            selectedNoteID = nil
+            openTabIDs = []
+            secondarySelectedNoteID = nil
             rebuildIndex()
         }
     }
@@ -76,10 +79,11 @@ final class NotesStore: ObservableObject {
     }
 
     func noteBinding(for noteID: UUID) -> Binding<NoteDocument>? {
-        guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return nil }
+        guard let snapshot = notes.first(where: { $0.id == noteID }) else { return nil }
         return Binding(
-            get: { self.notes[index] },
+            get: { self.notes.first(where: { $0.id == noteID }) ?? snapshot },
             set: { updated in
+                guard let index = self.notes.firstIndex(where: { $0.id == noteID }) else { return }
                 let previous = self.notes[index]
                 var next = updated
                 if next.title != previous.title {
@@ -89,7 +93,7 @@ final class NotesStore: ObservableObject {
                 }
                 self.notes[index] = next
                 self.notes[index].updatedAt = .now
-                self.persistSafely()
+                self.schedulePersist()
             }
         )
     }
@@ -288,7 +292,7 @@ final class NotesStore: ObservableObject {
         var updated = note
         updated.updatedAt = .now
         notes[index] = updated
-        persistSafely()
+        schedulePersist()
     }
 
     func open(noteID: UUID, recordHistory: Bool = true) {
@@ -446,10 +450,20 @@ final class NotesStore: ObservableObject {
     }
 
     private func persistSafely() {
+        persistTask?.cancel()
         do {
             try persist()
         } catch {
             assertionFailure("Failed to persist notes: \(error)")
+        }
+    }
+
+    private func schedulePersist() {
+        persistTask?.cancel()
+        persistTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled else { return }
+            persistSafely()
         }
     }
 
