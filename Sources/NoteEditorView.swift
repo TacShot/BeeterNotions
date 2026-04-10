@@ -1,11 +1,14 @@
+import AppKit
 import Charts
 import PDFKit
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 struct NoteEditorView: View {
     @Binding var note: NoteDocument
     @EnvironmentObject private var store: NotesStore
+    @State private var showDetails = false
 
     var body: some View {
         ScrollView {
@@ -13,11 +16,9 @@ struct NoteEditorView: View {
                 editorHero
 
                 VStack(alignment: .leading, spacing: 24) {
-                    pageMetaRow
-                    propertiesCard
-                    blockToolbar
-                    subpagesSection
-                    linksSection
+                    if showDetails {
+                        detailsSection
+                    }
                     blockEditor
                 }
                 .padding(.horizontal, 28)
@@ -26,6 +27,11 @@ struct NoteEditorView: View {
             }
         }
         .background(UITheme.window)
+        .task {
+            if note.blocks.isEmpty {
+                note.blocks = [.paragraph("")]
+            }
+        }
         .toolbar {
             ToolbarItemGroup {
                 Button {
@@ -41,8 +47,11 @@ struct NoteEditorView: View {
 
     private var editorHero: some View {
         Rectangle()
-            .fill(coverGradient)
+            .fill(.clear)
             .frame(height: 250)
+            .overlay {
+                coverBackground
+            }
             .overlay(alignment: .topLeading) {
                 heroTopBar
                     .padding(.horizontal, 28)
@@ -50,28 +59,25 @@ struct NoteEditorView: View {
             }
             .overlay(alignment: .bottomLeading) {
                 HStack(alignment: .bottom, spacing: 18) {
-                    RoundedRectangle(cornerRadius: 22)
-                        .fill(UITheme.elevated.opacity(0.95))
-                        .frame(width: 90, height: 90)
-                        .overlay {
-                            Image(systemName: note.icon)
-                                .font(.system(size: 36, weight: .medium))
-                                .foregroundStyle(.primary)
-                        }
+                    iconPicker
                     VStack(alignment: .leading, spacing: 8) {
                         Text(note.properties.subject.isEmpty ? "Private" : note.properties.subject)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(.white.opacity(0.82))
                             .lineLimit(1)
-                        Text(note.title)
+                        TextField("Untitled", text: $note.title)
+                            .textFieldStyle(.plain)
                             .font(.system(size: 34, weight: .bold))
                             .foregroundStyle(.white)
                             .lineLimit(2)
                             .minimumScaleFactor(0.75)
-                        Text(note.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.82))
-                            .lineLimit(1)
+                        HStack(spacing: 10) {
+                            StatusBadgeMenu(status: $note.properties.status)
+                            Text(note.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                                .font(.subheadline)
+                                .foregroundStyle(.white.opacity(0.82))
+                                .lineLimit(1)
+                        }
                     }
                     Spacer(minLength: 0)
                 }
@@ -87,6 +93,12 @@ struct NoteEditorView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 HStack(spacing: 10) {
+                    compactActionMenu("Cover", systemImage: "photo.on.rectangle") {
+                        coverMenu
+                    }
+                    compactActionButton(showDetails ? "Hide details" : "Details", systemImage: "slider.horizontal.3") {
+                        showDetails.toggle()
+                    }
                     compactActionButton("New subpage", systemImage: "plus") {
                         store.createChildNote(parentID: note.id)
                     }
@@ -99,6 +111,12 @@ struct NoteEditorView: View {
             VStack(alignment: .leading, spacing: 12) {
                 BreadcrumbsView(note: note)
                 HStack(spacing: 10) {
+                    compactActionMenu("Cover", systemImage: "photo.on.rectangle") {
+                        coverMenu
+                    }
+                    compactActionButton(showDetails ? "Hide details" : "Details", systemImage: "slider.horizontal.3") {
+                        showDetails.toggle()
+                    }
                     compactActionButton("New subpage", systemImage: "plus") {
                         store.createChildNote(parentID: note.id)
                     }
@@ -110,29 +128,11 @@ struct NoteEditorView: View {
         }
     }
 
-    private var pageMetaRow: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            TextField("Page title", text: $note.title)
-                .font(.system(size: 38, weight: .bold))
-                .textFieldStyle(.plain)
-                .lineLimit(2)
-
-            HStack(spacing: 8) {
-                StatusBadge(status: note.properties.status)
-                if note.isFavorite {
-                    Label("Favorite", systemImage: "star.fill")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.yellow)
-                }
-                ForEach(note.properties.tags, id: \.self) { tag in
-                    Text(tag)
-                        .font(.caption.weight(.medium))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(UITheme.subtleSelection)
-                        .clipShape(Capsule())
-                }
-            }
+    private var detailsSection: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            propertiesCard
+            subpagesSection
+            linksSection
         }
     }
 
@@ -194,22 +194,6 @@ struct NoteEditorView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 18)
                 .strokeBorder(UITheme.border.opacity(0.35), lineWidth: 1)
-        }
-    }
-
-    private var blockToolbar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                addBlockButton("Text", "text.alignleft") { note.blocks.append(.paragraph("")) }
-                addBlockButton("Heading", "textformat.size.larger") { note.blocks.append(.heading("New heading")) }
-                addBlockButton("Bullet List", "list.bullet") { note.blocks.append(.bulletedList(["List item"])) }
-                addBlockButton("Callout", "exclamationmark.bubble") { note.blocks.append(.callout("Add a concise highlight or important note.")) }
-                addBlockButton("Toggle", "chevron.right") { note.blocks.append(.toggle(title: "Toggle title", body: "Hidden content")) }
-                addBlockButton("Divider", "minus") { note.blocks.append(.divider()) }
-                addBlockButton("Code", "curlybraces") { note.blocks.append(.code("// Paste code here", language: "swift")) }
-                addBlockButton("Table", "tablecells") { note.blocks.append(.table(headers: ["Column 1", "Column 2"], rows: [["", ""], ["", ""]])) }
-                addBlockButton("Chart", "chart.bar.xaxis") { note.blocks.append(.chart(title: "Untitled Chart", points: [ChartPoint(label: "A", value: 3), ChartPoint(label: "B", value: 7)])) }
-            }
         }
     }
 
@@ -343,7 +327,7 @@ struct NoteEditorView: View {
     }
 
     private var blockEditor: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 18) {
             ForEach(Array(note.blocks.enumerated()), id: \.element.id) { index, _ in
                 BlockEditorRow(
                     block: $note.blocks[index],
@@ -356,8 +340,8 @@ struct NoteEditorView: View {
             Button {
                 note.blocks.append(.paragraph(""))
             } label: {
-                Label("Type '/' or add another block", systemImage: "plus.circle")
-                    .foregroundStyle(.secondary)
+                Text("Start a new line or press '/' to insert")
+                    .foregroundStyle(.tertiary)
             }
             .buttonStyle(.plain)
             .padding(.vertical, 8)
@@ -387,6 +371,88 @@ struct NoteEditorView: View {
         .buttonStyle(.plain)
     }
 
+    @ViewBuilder
+    private var coverMenu: some View {
+        Button("Sand") { note.cover = .sand; note.coverImageFilename = nil }
+        Button("Moss") { note.cover = .moss; note.coverImageFilename = nil }
+        Button("Dusk") { note.cover = .dusk; note.coverImageFilename = nil }
+        Button("Ocean") { note.cover = .ocean; note.coverImageFilename = nil }
+        Divider()
+        Button("Choose Cover Image") {
+            chooseCoverImage()
+        }
+        if note.coverImageFilename != nil {
+            Button("Remove Cover Image") {
+                if let id = store.selectedNoteID {
+                    store.setCoverImage(noteID: id, from: nil)
+                    note.coverImageFilename = nil
+                }
+            }
+        }
+    }
+
+    private var coverBackground: some View {
+        ZStack {
+            coverGradient
+            if let url = store.coverImageURL(for: note),
+               let image = NSImage(contentsOf: url) {
+                Image(nsImage: image)
+                    .resizable()
+                    .scaledToFill()
+            }
+        }
+        .clipped()
+    }
+
+    private var iconPicker: some View {
+        Menu {
+            ForEach(["doc.text", "book", "graduationcap", "checklist", "calendar", "folder", "lightbulb", "chart.bar", "paperclip", "photo"], id: \.self) { icon in
+                Button {
+                    note.icon = icon
+                } label: {
+                    Label(iconLabel(for: icon), systemImage: icon)
+                }
+            }
+        } label: {
+            RoundedRectangle(cornerRadius: 22)
+                .fill(UITheme.elevated.opacity(0.95))
+                .frame(width: 90, height: 90)
+                .overlay {
+                    Image(systemName: note.icon)
+                        .font(.system(size: 36, weight: .medium))
+                        .foregroundStyle(.primary)
+                }
+        }
+        .menuStyle(.borderlessButton)
+    }
+
+    private func iconLabel(for icon: String) -> String {
+        switch icon {
+        case "doc.text": "Document"
+        case "book": "Book"
+        case "graduationcap": "Study"
+        case "checklist": "Checklist"
+        case "calendar": "Calendar"
+        case "folder": "Folder"
+        case "lightbulb": "Idea"
+        case "chart.bar": "Chart"
+        case "paperclip": "Attachment"
+        case "photo": "Photo"
+        default: icon
+        }
+    }
+
+    private func chooseCoverImage() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff"].compactMap { UTType(filenameExtension: $0) }
+        guard panel.runModal() == .OK, let url = panel.url, let id = store.selectedNoteID else { return }
+        store.setCoverImage(noteID: id, from: url)
+        note.coverImageFilename = store.selectedNote()?.coverImageFilename
+    }
+
     private func compactActionButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
@@ -402,6 +468,26 @@ struct NoteEditorView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 12))
         }
         .buttonStyle(.plain)
+        .foregroundStyle(.white)
+    }
+
+    private func compactActionMenu<Content: View>(_ title: String, systemImage: String, @ViewBuilder content: () -> Content) -> some View {
+        Menu {
+            content()
+        } label: {
+            Label(title, systemImage: systemImage)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(UITheme.elevated.opacity(0.18))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(.white.opacity(0.16), lineWidth: 1)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .menuStyle(.borderlessButton)
         .foregroundStyle(.white)
     }
 
@@ -481,35 +567,39 @@ private struct BreadcrumbsView: View {
 }
 
 private struct BlockEditorRow: View {
+    private struct SlashCommand: Identifiable {
+        let id: String
+        let title: String
+        let icon: String
+        let keywords: [String]
+        let action: () -> Void
+    }
+
     @Binding var block: NoteBlock
     let onDelete: () -> Void
     let onMoveUp: () -> Void
     let onMoveDown: () -> Void
 
+    @EnvironmentObject private var store: NotesStore
     @State private var showSlashMenu = false
+    @State private var showFormatPopover = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             VStack(spacing: 8) {
                 Menu {
-                    Button("Text") { block = .paragraph(textValue(from: block) ?? "") }
-                    Button("Heading") { block = .heading(textValue(from: block) ?? "Heading") }
-                    Button("Bullet List") { block = .bulletedList(listValue(from: block) ?? ["List item"]) }
-                    Button("Callout") { block = .callout(textValue(from: block) ?? "Important note") }
-                    Button("Toggle") { block = .toggle(title: "Toggle title", body: textValue(from: block) ?? "") }
-                    Button("Divider") { block = .divider() }
-                    Button("Code") { block = .code(codeValue(from: block)?.snippet ?? "", language: codeValue(from: block)?.language ?? "swift") }
-                    Button("Table") { block = .table(headers: ["Column 1", "Column 2"], rows: [["", ""]]) }
-                    Button("Chart") { block = .chart(title: "Untitled Chart", points: [ChartPoint(label: "A", value: 1)]) }
+                    formatMenuContent
                 } label: {
                     Image(systemName: "plus.circle")
                 }
                 .menuStyle(.borderlessButton)
 
-                Button(action: onMoveUp) { Image(systemName: "chevron.up") }
-                    .buttonStyle(.borderless)
-                Button(action: onMoveDown) { Image(systemName: "chevron.down") }
-                    .buttonStyle(.borderless)
+                if !isSingleBlankParagraph {
+                    Button(action: onMoveUp) { Image(systemName: "chevron.up") }
+                        .buttonStyle(.borderless)
+                    Button(action: onMoveDown) { Image(systemName: "chevron.down") }
+                        .buttonStyle(.borderless)
+                }
             }
             .foregroundStyle(.secondary)
             .padding(.top, 6)
@@ -535,45 +625,134 @@ private struct BlockEditorRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button(role: .destructive, action: onDelete) {
-                Image(systemName: "trash")
+            .contextMenu { formatMenuContent }
+            .popover(isPresented: $showFormatPopover, arrowEdge: .top) {
+                VStack(alignment: .leading, spacing: 6) {
+                    formatMenuContent
+                }
+                .padding(12)
+                .frame(width: 220)
             }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .padding(.top, 6)
+            .simultaneousGesture(TapGesture().onEnded {
+                if NSEvent.modifierFlags.contains(.option) {
+                    showFormatPopover = true
+                }
+            })
+
+            if !isSingleBlankParagraph {
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .padding(.top, 6)
+            }
         }
+    }
+
+    private var isSingleBlankParagraph: Bool {
+        block.type == .paragraph && (textValue(from: block) ?? "").isEmpty
+    }
+
+    @ViewBuilder
+    private var formatMenuContent: some View {
+        Button("Text") { block = .paragraph(textValue(from: block) ?? "") }
+        Button("Heading") { block = .heading(textValue(from: block) ?? "Heading") }
+        Button("Bullet List") { block = .bulletedList(listValue(from: block) ?? ["List item"]) }
+        Button("Callout") { block = .callout(textValue(from: block) ?? "Important note") }
+        Button("Toggle") { block = .toggle(title: "Toggle title", body: textValue(from: block) ?? "") }
+        Button("Divider") { block = .divider() }
+        Button("Code") { block = .code(codeValue(from: block)?.snippet ?? "", language: codeValue(from: block)?.language ?? "swift") }
+        Button("Table") { block = .table(headers: ["Column 1", "Column 2"], rows: [["", ""]]) }
+        Button("Chart") { block = .chart(title: "Untitled Chart", points: [ChartPoint(label: "A", value: 1)]) }
+        Button("Image") { importFileBlock(allowedExtensions: ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff"]) }
+        Button("File") { importFileBlock(allowedExtensions: ["pdf", "html", "htm", "csv"]) }
     }
 
     private func textEditor(text: String) -> some View {
         let binding = Binding(
             get: { text },
             set: { newValue in
-                if newValue.hasPrefix("/") && newValue.count > 1 {
-                    applySlashCommand(newValue)
+                if newValue.hasPrefix("/") {
+                    block.payload = .text(newValue)
+                    showSlashMenu = true
                 } else {
                     block.payload = .text(newValue)
+                    showSlashMenu = false
                 }
             }
         )
 
-        return Group {
+        return VStack(alignment: .leading, spacing: 8) {
             if block.type == .heading {
                 TextField("Heading", text: binding, axis: .vertical)
                     .font(.system(size: 30, weight: .semibold))
                     .textFieldStyle(.plain)
             } else if block.type == .callout {
-                TextField("Callout", text: binding, axis: .vertical)
-                    .textFieldStyle(.plain)
+                TextEditor(text: binding)
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 84)
                     .padding(14)
                     .background(UITheme.subtleSelection)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
             } else {
-                TextField("Type '/' for commands", text: binding, axis: .vertical)
-                    .textFieldStyle(.plain)
-                    .foregroundStyle(.primary)
+                ZStack(alignment: .topLeading) {
+                    if text.isEmpty {
+                        Text("Type '/' for commands")
+                            .foregroundStyle(.tertiary)
+                            .padding(.top, 8)
+                            .padding(.leading, 4)
+                    }
+                    TextEditor(text: binding)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight: 84)
+                        .foregroundStyle(.primary)
+                }
+            }
+
+            if showSlashMenu, !filteredSlashCommands.isEmpty {
+                slashMenu
             }
         }
+    }
+
+    private var slashMenu: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Insert")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+
+            ForEach(filteredSlashCommands) { command in
+                Button {
+                    showSlashMenu = false
+                    command.action()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: command.icon)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+                        Text(command.title)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(maxWidth: 320, alignment: .leading)
+        .background(UITheme.elevated)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(UITheme.border.opacity(0.35), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.08), radius: 10, x: 0, y: 5)
     }
 
     private func listEditor(items: [String]) -> some View {
@@ -802,6 +981,76 @@ private struct BlockEditorRow: View {
         }
     }
 
+    private var slashQuery: String {
+        (textValue(from: block) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .dropFirst()
+            .lowercased()
+    }
+
+    private var filteredSlashCommands: [SlashCommand] {
+        let commands = slashCommands
+        guard !slashQuery.isEmpty else { return commands }
+        return commands.filter { command in
+            command.title.lowercased().contains(slashQuery) ||
+            command.keywords.contains(where: { $0.contains(slashQuery) })
+        }
+    }
+
+    private var slashCommands: [SlashCommand] {
+        [
+            SlashCommand(id: "text", title: "Text", icon: "text.alignleft", keywords: ["paragraph", "text"]) {
+                block = .paragraph("")
+            },
+            SlashCommand(id: "heading", title: "Heading", icon: "textformat.size.larger", keywords: ["h1", "title", "heading"]) {
+                block = .heading("Heading")
+            },
+            SlashCommand(id: "bullet", title: "Bullet List", icon: "list.bullet", keywords: ["list", "bullet", "todo"]) {
+                block = .bulletedList(["List item"])
+            },
+            SlashCommand(id: "callout", title: "Callout", icon: "exclamationmark.bubble", keywords: ["callout", "highlight"]) {
+                block = .callout("Important note")
+            },
+            SlashCommand(id: "toggle", title: "Toggle", icon: "chevron.right", keywords: ["toggle", "details"]) {
+                block = .toggle(title: "Toggle title", body: "")
+            },
+            SlashCommand(id: "divider", title: "Divider", icon: "minus", keywords: ["divider", "separator"]) {
+                block = .divider()
+            },
+            SlashCommand(id: "code", title: "Code", icon: "curlybraces", keywords: ["code", "snippet"]) {
+                block = .code("", language: "swift")
+            },
+            SlashCommand(id: "table", title: "Table", icon: "tablecells", keywords: ["table", "database"]) {
+                block = .table(headers: ["Column 1", "Column 2"], rows: [["", ""]])
+            },
+            SlashCommand(id: "chart", title: "Chart", icon: "chart.bar.xaxis", keywords: ["chart", "graph"]) {
+                block = .chart(title: "Untitled Chart", points: [.init(label: "A", value: 1)])
+            },
+            SlashCommand(id: "image", title: "Image", icon: "photo", keywords: ["image", "photo", "png", "jpg"]) {
+                importFileBlock(allowedExtensions: ["png", "jpg", "jpeg", "gif", "webp", "heic", "tiff"])
+            },
+            SlashCommand(id: "file", title: "File", icon: "paperclip", keywords: ["file", "pdf", "html", "csv"]) {
+                importFileBlock(allowedExtensions: ["pdf", "html", "htm", "csv"])
+            }
+        ]
+    }
+
+    private func importFileBlock(allowedExtensions: [String]) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = allowedExtensions.compactMap { UTType(filenameExtension: $0) }
+
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            guard let payload = try store.importedPayload(from: url) else { return }
+            block = .file(payload)
+        } catch {
+            store.lastOperationStatus = "Import failed: \(error.localizedDescription)"
+        }
+    }
+
     private func textValue(from block: NoteBlock) -> String? {
         if case let .text(value) = block.payload { return value }
         return nil
@@ -859,6 +1108,33 @@ private struct ImportedFileBlockView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 16)
                 .strokeBorder(UITheme.border.opacity(0.35), lineWidth: 1)
+        }
+    }
+}
+
+private struct StatusBadgeMenu: View {
+    @Binding var status: NoteStatus
+
+    var body: some View {
+        Menu {
+            ForEach(NoteStatus.allCases) { option in
+                Button {
+                    status = option
+                } label: {
+                    Label(option.label, systemImage: option == status ? "checkmark" : optionIcon(for: option))
+                }
+            }
+        } label: {
+            StatusBadge(status: status)
+        }
+        .menuStyle(.borderlessButton)
+    }
+
+    private func optionIcon(for status: NoteStatus) -> String {
+        switch status {
+        case .notStarted: "circle"
+        case .inProgress: "clock"
+        case .complete: "checkmark.circle"
         }
     }
 }

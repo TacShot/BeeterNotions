@@ -7,10 +7,12 @@ struct NoteDocument: Codable, Identifiable, Hashable {
     var aliases: [String]
     var icon: String
     var vaultRelativePath: String?
+    var folderID: UUID?
     var parentID: UUID?
     var isFavorite: Bool
     var isInTrash: Bool
     var cover: CoverStyle
+    var coverImageFilename: String?
     var properties: NoteProperties
     var createdAt: Date
     var updatedAt: Date
@@ -23,10 +25,12 @@ struct NoteDocument: Codable, Identifiable, Hashable {
         aliases: [String] = [],
         icon: String = "doc.text",
         vaultRelativePath: String? = nil,
+        folderID: UUID? = nil,
         parentID: UUID? = nil,
         isFavorite: Bool = false,
         isInTrash: Bool = false,
         cover: CoverStyle = .sand,
+        coverImageFilename: String? = nil,
         properties: NoteProperties = .init(),
         createdAt: Date = .now,
         updatedAt: Date = .now,
@@ -38,10 +42,12 @@ struct NoteDocument: Codable, Identifiable, Hashable {
         self.aliases = aliases
         self.icon = icon
         self.vaultRelativePath = vaultRelativePath
+        self.folderID = folderID
         self.parentID = parentID
         self.isFavorite = isFavorite
         self.isInTrash = isInTrash
         self.cover = cover
+        self.coverImageFilename = coverImageFilename
         self.properties = properties
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -352,4 +358,16 @@ struct NoteIndex {
     var derivedTags: [UUID: [String]]
 
     static let empty = NoteIndex(outgoingLinks: [:], resolvedOutgoingLinks: [:], backlinks: [:], derivedTags: [:])
+}
+
+struct SidebarFolder: Codable, Identifiable, Hashable {
+    var id: UUID
+    var name: String
+    var createdAt: Date
+
+    init(id: UUID = UUID(), name: String, createdAt: Date = .now) {
+        self.id = id
+        self.name = name
+        self.createdAt = createdAt
+    }
 }

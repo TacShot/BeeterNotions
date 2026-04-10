@@ -57,6 +57,7 @@ private struct AppSidebarView: View {
                 sidebarAction("All Notes", icon: "doc.text", isActive: store.activePane == .workspace && store.selectedView == .allNotes) {
                     store.activePane = .workspace
                     store.selectedView = .allNotes
+                    store.browserMode = .table
                 }
                 sidebarAction("Favorites", icon: "star", isActive: store.activePane == .workspace && store.selectedView == .favorites) {
                     store.activePane = .workspace
@@ -76,8 +77,20 @@ private struct AppSidebarView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 2) {
+                    ForEach(store.rootFolders) { folder in
+                        SidebarFolderRow(folder: folder)
+                    }
                     ForEach(store.rootNotes) { note in
                         PageTreeRow(note: note, level: 0)
+                    }
+                }
+                .contentShape(Rectangle())
+                .contextMenu {
+                    Button("New Folder") {
+                        store.createFolder()
+                    }
+                    Button("New Page") {
+                        store.createNote()
                     }
                 }
             }
@@ -137,6 +150,52 @@ private struct AppSidebarView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
+    }
+}
+
+private struct SidebarFolderRow: View {
+    let folder: SidebarFolder
+
+    @EnvironmentObject private var store: NotesStore
+    @State private var isExpanded = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Button {
+                isExpanded.toggle()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                        .frame(width: 12)
+                        .foregroundStyle(.secondary)
+                    Image(systemName: "folder")
+                        .foregroundStyle(.secondary)
+                    Text(folder.name)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Spacer()
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plain)
+            .contextMenu {
+                Button("New Page in Folder") {
+                    store.createNote(in: folder.id)
+                }
+                Button("New Folder") {
+                    store.createFolder()
+                }
+            }
+
+            if isExpanded {
+                ForEach(store.notes(in: folder.id)) { note in
+                    PageTreeRow(note: note, level: 1)
+                }
+            }
+        }
     }
 }
 
@@ -581,40 +640,19 @@ private struct PagesTableBrowser: View {
     var body: some View {
         Table(store.visibleNotes, selection: $store.selectedNoteID) {
             TableColumn("Title") { note in
-                Button {
-                    store.open(noteID: note.id)
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: note.icon)
-                            .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(note.title)
-                                .fontWeight(.medium)
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                            if !store.childNotes(of: note.id).isEmpty {
-                                Text("\(store.childNotes(of: note.id).count) subpages")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
+                TableTitleCell(noteID: note.id)
             }
             TableColumn("Course") { note in
-                Text(note.properties.course.isEmpty ? "Untitled" : note.properties.course)
+                EditableNoteTextCell(noteID: note.id, keyPath: \.properties.course, placeholder: "Untitled")
             }
             TableColumn("Date") { note in
-                Text(note.properties.dueDate?.formatted(date: .abbreviated, time: .omitted) ?? "No date")
+                EditableNoteDateCell(noteID: note.id)
             }
             TableColumn("Status") { note in
-                StatusBadge(status: note.properties.status)
+                EditableNoteStatusCell(noteID: note.id)
             }
             TableColumn("Summary") { note in
-                Text(note.properties.summary)
-                    .lineLimit(1)
+                EditableNoteTextCell(noteID: note.id, keyPath: \.properties.summary, placeholder: "No summary")
             }
         }
         .tableStyle(.inset(alternatesRowBackgrounds: false))
@@ -623,6 +661,115 @@ private struct PagesTableBrowser: View {
                 ContentUnavailableView("No pages", systemImage: "doc.text", description: Text("Create a page or import a workspace from Settings."))
             }
         }
+    }
+}
+
+private struct TableTitleCell: View {
+    let noteID: UUID
+    @EnvironmentObject private var store: NotesStore
+    @State private var isHovering = false
+
+    var body: some View {
+        if let note = store.notes.first(where: { $0.id == noteID }) {
+            HStack(spacing: 10) {
+                Image(systemName: note.icon)
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(note.title)
+                        .fontWeight(.medium)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if !store.childNotes(of: note.id).isEmpty {
+                        Text("\(store.childNotes(of: note.id).count) subpages")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                if isHovering {
+                    Button("Open") {
+                        store.open(noteID: note.id)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovering = hovering
+            }
+        }
+    }
+}
+
+private struct EditableNoteTextCell: View {
+    let noteID: UUID
+    let keyPath: WritableKeyPath<NoteDocument, String>
+    let placeholder: String
+    @EnvironmentObject private var store: NotesStore
+
+    var body: some View {
+        if let binding = store.noteBinding(for: noteID) {
+            TextField(
+                placeholder,
+                text: Binding(
+                    get: { binding.wrappedValue[keyPath: keyPath] },
+                    set: { binding.wrappedValue[keyPath: keyPath] = $0 }
+                )
+            )
+            .textFieldStyle(.plain)
+        }
+    }
+}
+
+private struct EditableNoteDateCell: View {
+    let noteID: UUID
+    @EnvironmentObject private var store: NotesStore
+
+    var body: some View {
+        if let binding = store.noteBinding(for: noteID) {
+            DatePicker(
+                "",
+                selection: Binding(
+                    get: { binding.wrappedValue.properties.dueDate ?? .now },
+                    set: { binding.wrappedValue.properties.dueDate = $0 }
+                ),
+                displayedComponents: .date
+            )
+            .labelsHidden()
+        }
+    }
+}
+
+private struct EditableNoteStatusCell: View {
+    let noteID: UUID
+    @EnvironmentObject private var store: NotesStore
+
+    var body: some View {
+        if let binding = store.noteBinding(for: noteID) {
+            InlineStatusBadgeMenu(status: Binding(
+                get: { binding.wrappedValue.properties.status },
+                set: { binding.wrappedValue.properties.status = $0 }
+            ))
+        }
+    }
+}
+
+private struct InlineStatusBadgeMenu: View {
+    @Binding var status: NoteStatus
+
+    var body: some View {
+        Menu {
+            ForEach(NoteStatus.allCases) { option in
+                Button(option.label) {
+                    status = option
+                }
+            }
+        } label: {
+            StatusBadge(status: status)
+        }
+        .menuStyle(.borderlessButton)
     }
 }
 
@@ -643,6 +790,7 @@ private struct TabbedDetailWorkspace: View {
             }
         }
         .background(UITheme.window)
+        .simultaneousGesture(historySwipeGesture)
     }
 
     private var tabBar: some View {
@@ -661,6 +809,22 @@ private struct TabbedDetailWorkspace: View {
                 }
                 .buttonStyle(.borderless)
                 .padding(.leading, 8)
+
+                Button {
+                    store.goBack()
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!store.canGoBack)
+
+                Button {
+                    store.goForward()
+                } label: {
+                    Label("Forward", systemImage: "chevron.right")
+                }
+                .buttonStyle(.borderless)
+                .disabled(!store.canGoForward)
 
                 if showsCloseControl {
                     Button {
@@ -723,14 +887,35 @@ private struct TabbedDetailWorkspace: View {
         }
         .padding(.vertical, 4)
     }
+
+    private var historySwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 50)
+            .onEnded { value in
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                if value.translation.width > 90 {
+                    store.goBack()
+                } else if value.translation.width < -90 {
+                    store.goForward()
+                }
+            }
+    }
 }
 
 private struct BrowserHeader: View {
+    @EnvironmentObject private var store: NotesStore
+
     var body: some View {
-        HStack {
-            Label("Beeter Workspace", systemImage: "books.vertical.fill")
-                .font(.headline)
+        HStack(alignment: .center) {
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Beeter Workspace", systemImage: "books.vertical.fill")
+                    .font(.headline)
+                Text("\(store.visibleNotes.count) notes in view")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
+            StatusBadge(status: .inProgress)
+                .opacity(0)
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 14)

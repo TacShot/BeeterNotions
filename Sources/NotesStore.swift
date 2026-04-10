@@ -6,16 +6,19 @@ import UniformTypeIdentifiers
 @MainActor
 final class NotesStore: ObservableObject {
     @Published private(set) var notes: [NoteDocument] = []
+    @Published private(set) var folders: [SidebarFolder] = []
     @Published private(set) var noteIndex: NoteIndex = .empty
     @Published var selectedNoteID: UUID?
     @Published var searchText: String = ""
     @Published var selectedView: WorkspaceView = .allNotes
-    @Published var browserMode: BrowserMode = .list
+    @Published var browserMode: BrowserMode = .table
     @Published var activePane: AppPane = .workspace
     @Published var lastOperationStatus: String?
     @Published var openTabIDs: [UUID] = []
     @Published var splitViewEnabled: Bool = false
     @Published var secondarySelectedNoteID: UUID?
+    @Published private(set) var backHistory: [UUID] = []
+    @Published private(set) var forwardHistory: [UUID] = []
 
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
@@ -30,6 +33,7 @@ final class NotesStore: ObservableObject {
         do {
             let appDirectory = try appDirectory()
             let vaultNotes = try MarkdownVault.loadNotes(appDirectory: appDirectory)
+            folders = try loadFolders(appDirectory: appDirectory)
 
             if vaultNotes.isEmpty {
                 let legacyURL = try notesIndexURL()
@@ -49,6 +53,7 @@ final class NotesStore: ObservableObject {
             rebuildIndex()
         } catch {
             notes = Self.sampleNotes()
+            folders = []
             selectedNoteID = notes.first?.id
             openSelectedInTabs()
             rebuildIndex()
@@ -91,8 +96,12 @@ final class NotesStore: ObservableObject {
 
     var rootNotes: [NoteDocument] {
         notes
-            .filter { $0.parentID == nil && !$0.isInTrash }
+            .filter { $0.parentID == nil && $0.folderID == nil && !$0.isInTrash }
             .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    var rootFolders: [SidebarFolder] {
+        folders.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     func backlinks(for noteID: UUID) -> [NoteDocument] {
@@ -146,39 +155,42 @@ final class NotesStore: ObservableObject {
             .sorted { $0.updatedAt > $1.updatedAt }
     }
 
-    func createNote() {
+    func notes(in folderID: UUID) -> [NoteDocument] {
+        notes
+            .filter { $0.folderID == folderID && $0.parentID == nil && !$0.isInTrash }
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    func createNote(in folderID: UUID? = nil) {
         let note = NoteDocument(
-            title: "New Page",
+            title: "Untitled",
             icon: "doc.text",
+            folderID: folderID,
             cover: .sand,
-            properties: .init(summary: "Local offline page", status: .notStarted),
-            blocks: [
-                .heading("Untitled"),
-                .paragraph("Use slash commands, add-block controls, and page properties to shape this page."),
-                .callout("This page is stored locally and remains available offline.")
-            ]
+            properties: .init(status: .notStarted),
+            blocks: []
         )
         notes.insert(note, at: 0)
-        selectedNoteID = note.id
         activePane = .workspace
         open(noteID: note.id)
         persistSafely()
     }
 
+    func createFolder(named name: String = "New Folder") {
+        folders.append(SidebarFolder(name: name))
+        persistSafely()
+    }
+
     func createChildNote(parentID: UUID) {
         let note = NoteDocument(
-            title: "Subpage",
+            title: "Untitled",
             icon: "doc.on.doc",
             parentID: parentID,
             cover: .moss,
-            properties: .init(summary: "Nested page", status: .notStarted),
-            blocks: [
-                .heading("Subpage"),
-                .paragraph("Nested pages help this feel much closer to Notion.")
-            ]
+            properties: .init(status: .notStarted),
+            blocks: []
         )
         notes.insert(note, at: 0)
-        selectedNoteID = note.id
         activePane = .workspace
         open(noteID: note.id)
         persistSafely()
@@ -223,12 +235,40 @@ final class NotesStore: ObservableObject {
         persistSafely()
     }
 
-    func open(noteID: UUID) {
+    func open(noteID: UUID, recordHistory: Bool = true) {
+        if recordHistory, let current = selectedNoteID, current != noteID {
+            backHistory.append(current)
+            forwardHistory.removeAll()
+        }
         if !openTabIDs.contains(noteID) {
             openTabIDs.append(noteID)
         }
         selectedNoteID = noteID
         activePane = .workspace
+    }
+
+    var canGoBack: Bool {
+        !backHistory.isEmpty
+    }
+
+    var canGoForward: Bool {
+        !forwardHistory.isEmpty
+    }
+
+    func goBack() {
+        guard let previous = backHistory.popLast() else { return }
+        if let current = selectedNoteID, current != previous {
+            forwardHistory.append(current)
+        }
+        open(noteID: previous, recordHistory: false)
+    }
+
+    func goForward() {
+        guard let next = forwardHistory.popLast() else { return }
+        if let current = selectedNoteID, current != next {
+            backHistory.append(current)
+        }
+        open(noteID: next, recordHistory: false)
     }
 
     func closeTab(noteID: UUID) {
@@ -267,6 +307,14 @@ final class NotesStore: ObservableObject {
         updated.blocks.append(.file(payload))
         update(note: updated)
         lastOperationStatus = "Imported \(sourceURL.lastPathComponent)"
+    }
+
+    func importedPayload(from sourceURL: URL) throws -> ImportedFilePayload? {
+        let fileExtension = sourceURL.pathExtension.lowercased()
+        guard let kind = ImportedFilePayload.FileKind(fileExtension: fileExtension) else {
+            return nil
+        }
+        return try copyAttachment(from: sourceURL, kind: kind)
     }
 
     func importNotionArchive(from sourceURL: URL) throws {
@@ -322,6 +370,8 @@ final class NotesStore: ObservableObject {
         notes = try notes.map { note in
             try MarkdownVault.save(note: note, appDirectory: appDirectory)
         }
+        let foldersData = try encoder.encode(folders)
+        try foldersData.write(to: foldersURL(), options: .atomic)
         let url = try notesIndexURL()
         let parent = url.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
@@ -439,6 +489,10 @@ final class NotesStore: ObservableObject {
         try appDirectory().appendingPathComponent("notes.json")
     }
 
+    private func foldersURL() throws -> URL {
+        try appDirectory().appendingPathComponent("folders.json")
+    }
+
     private func attachmentsDirectory() throws -> URL {
         let url = try appDirectory().appendingPathComponent("Attachments", isDirectory: true)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
@@ -509,6 +563,13 @@ final class NotesStore: ObservableObject {
         return sanitized.isEmpty ? "Untitled" : sanitized
     }
 
+    private func loadFolders(appDirectory: URL) throws -> [SidebarFolder] {
+        let url = appDirectory.appendingPathComponent("folders.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let data = try Data(contentsOf: url)
+        return try decoder.decode([SidebarFolder].self, from: data)
+    }
+
     private func copyAttachment(from sourceURL: URL, kind: ImportedFilePayload.FileKind) throws -> ImportedFilePayload {
         let fileExtension = sourceURL.pathExtension.lowercased()
         let storedFilename = "\(UUID().uuidString).\(fileExtension)"
@@ -523,6 +584,27 @@ final class NotesStore: ObservableObject {
             storedFilename: storedFilename,
             kind: kind
         )
+    }
+
+    func setCoverImage(noteID: UUID, from sourceURL: URL?) {
+        guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return }
+        do {
+            if let sourceURL {
+                guard let payload = try importedPayload(from: sourceURL), payload.kind == .image else { return }
+                notes[index].coverImageFilename = payload.storedFilename
+            } else {
+                notes[index].coverImageFilename = nil
+            }
+            notes[index].updatedAt = .now
+            persistSafely()
+        } catch {
+            lastOperationStatus = "Cover update failed: \(error.localizedDescription)"
+        }
+    }
+
+    func coverImageURL(for note: NoteDocument) -> URL? {
+        guard let filename = note.coverImageFilename else { return nil }
+        return try? attachmentsDirectory().appendingPathComponent(filename)
     }
 }
 

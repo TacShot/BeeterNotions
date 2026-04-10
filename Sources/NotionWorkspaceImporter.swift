@@ -116,43 +116,25 @@ enum NotionWorkspaceImporter {
         }
 
         if parentID != nil && htmlFiles.isEmpty && markdownFiles.isEmpty {
+            var attachmentBlocks: [NoteBlock] = []
+
             for pdfFile in pdfFiles.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
                 if let payload = try copyAttachment(pdfFile) {
-                    let note = NoteDocument(
-                        title: cleanName(pdfFile.deletingPathExtension().lastPathComponent),
-                        icon: "doc.richtext",
-                        parentID: parentID,
-                        cover: .ocean,
-                        properties: .init(
-                            course: preferredCourse,
-                            subject: cleanName(folderURL.lastPathComponent),
-                            summary: "Imported PDF attachment",
-                            status: .notStarted
-                        ),
-                        blocks: [.file(payload)]
-                    )
-                    state.importedNotes.append(note)
+                    attachmentBlocks.append(.file(payload))
                     state.importedFilesCount += 1
                 }
             }
 
             for imageFile in imageFiles.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
                 if let payload = try copyAttachment(imageFile) {
-                    let note = NoteDocument(
-                        title: cleanName(imageFile.deletingPathExtension().lastPathComponent),
-                        icon: "photo",
-                        parentID: parentID,
-                        cover: .dusk,
-                        properties: .init(
-                            course: preferredCourse,
-                            subject: cleanName(folderURL.lastPathComponent),
-                            summary: "Imported image attachment",
-                            status: .notStarted
-                        ),
-                        blocks: [.file(payload)]
-                    )
-                    state.importedNotes.append(note)
+                    attachmentBlocks.append(.file(payload))
                     state.importedFilesCount += 1
+                }
+            }
+
+            if !attachmentBlocks.isEmpty, let parentID {
+                if let importedIndex = state.importedNotes.firstIndex(where: { $0.id == parentID }) {
+                    state.importedNotes[importedIndex].blocks.append(contentsOf: attachmentBlocks)
                 }
             }
         }
