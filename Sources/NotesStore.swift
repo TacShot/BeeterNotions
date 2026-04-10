@@ -10,13 +10,13 @@ final class NotesStore: ObservableObject {
     @Published private(set) var noteIndex: NoteIndex = .empty
     @Published var selectedNoteID: UUID?
     @Published var searchText: String = ""
-    @Published var selectedView: WorkspaceView = .allNotes
     @Published var browserMode: BrowserMode = .table
     @Published var activePane: AppPane = .workspace
     @Published var lastOperationStatus: String?
     @Published var openTabIDs: [UUID] = []
     @Published var splitViewEnabled: Bool = false
     @Published var secondarySelectedNoteID: UUID?
+    @Published var renamingNoteID: UUID?
     @Published private(set) var backHistory: [UUID] = []
     @Published private(set) var forwardHistory: [UUID] = []
 
@@ -123,17 +123,7 @@ final class NotesStore: ObservableObject {
     }
 
     var visibleNotes: [NoteDocument] {
-        let base = notes.filter { !$0.isInTrash }
-
-        let filteredByView: [NoteDocument]
-        switch selectedView {
-        case .allNotes:
-            filteredByView = base.filter { $0.parentID == nil }
-        case .favorites:
-            filteredByView = base.filter { $0.isFavorite }
-        case .assignments:
-            filteredByView = base.filter { !$0.properties.course.isEmpty }
-        }
+        let filteredByView = notes.filter { !$0.isInTrash && $0.parentID == nil }
 
         guard !searchText.isEmpty else {
             return filteredByView.sorted { $0.updatedAt > $1.updatedAt }
@@ -144,7 +134,8 @@ final class NotesStore: ObservableObject {
             note.title.lowercased().contains(query) ||
             note.properties.course.lowercased().contains(query) ||
             note.properties.subject.lowercased().contains(query) ||
-            note.properties.summary.lowercased().contains(query)
+            note.properties.summary.lowercased().contains(query) ||
+            note.properties.tags.joined(separator: " ").lowercased().contains(query)
         }
         .sorted { $0.updatedAt > $1.updatedAt }
     }
@@ -178,6 +169,71 @@ final class NotesStore: ObservableObject {
 
     func createFolder(named name: String = "New Folder") {
         folders.append(SidebarFolder(name: name))
+        persistSafely()
+    }
+
+    func renameNote(noteID: UUID, to title: String) {
+        guard let index = notes.firstIndex(where: { $0.id == noteID }) else { return }
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            renamingNoteID = nil
+            return
+        }
+        var updated = notes[index]
+        let previousTitle = updated.title
+        if trimmed != previousTitle {
+            updated.aliases = Array(Set(updated.aliases + [previousTitle])).sorted()
+            updated.title = trimmed
+            updated.slug = NoteDocument.makeSlug(from: trimmed)
+            rewriteLinks(from: previousTitle, to: trimmed)
+        }
+        updated.updatedAt = .now
+        notes[index] = updated
+        renamingNoteID = nil
+        persistSafely()
+    }
+
+    func archiveNote(noteID: UUID) {
+        let idsToArchive = Set(descendantNoteIDs(for: noteID) + [noteID])
+        guard !idsToArchive.isEmpty else { return }
+        for index in notes.indices where idsToArchive.contains(notes[index].id) {
+            notes[index].isInTrash = true
+            notes[index].updatedAt = .now
+        }
+        if let selectedNoteID, idsToArchive.contains(selectedNoteID) {
+            self.selectedNoteID = nil
+        }
+        openTabIDs.removeAll { idsToArchive.contains($0) }
+        backHistory.removeAll { idsToArchive.contains($0) }
+        forwardHistory.removeAll { idsToArchive.contains($0) }
+        if let secondarySelectedNoteID, idsToArchive.contains(secondarySelectedNoteID) {
+            self.secondarySelectedNoteID = nil
+        }
+        persistSafely()
+    }
+
+    func deleteNotePermanently(noteID: UUID) {
+        let idsToDelete = Set(descendantNoteIDs(for: noteID) + [noteID])
+        guard !idsToDelete.isEmpty else { return }
+
+        let appDirectory = try? appDirectory()
+        let notesToDelete = notes.filter { idsToDelete.contains($0.id) }
+        if let appDirectory {
+            for note in notesToDelete {
+                try? MarkdownVault.deleteMarkdownFile(for: note, appDirectory: appDirectory)
+            }
+        }
+
+        notes.removeAll { idsToDelete.contains($0.id) }
+        if let selectedNoteID, idsToDelete.contains(selectedNoteID) {
+            self.selectedNoteID = nil
+        }
+        openTabIDs.removeAll { idsToDelete.contains($0) }
+        backHistory.removeAll { idsToDelete.contains($0) }
+        forwardHistory.removeAll { idsToDelete.contains($0) }
+        if let secondarySelectedNoteID, idsToDelete.contains(secondarySelectedNoteID) {
+            self.secondarySelectedNoteID = nil
+        }
         persistSafely()
     }
 
@@ -343,6 +399,15 @@ final class NotesStore: ObservableObject {
 
     func exportSelectedNote(as format: ExportFormat) throws -> URL? {
         guard let note = selectedNote() else { return nil }
+        return try export(note: note, as: format)
+    }
+
+    func export(noteID: UUID, as format: ExportFormat) throws -> URL? {
+        guard let note = notes.first(where: { $0.id == noteID }) else { return nil }
+        return try export(note: note, as: format)
+    }
+
+    private func export(note: NoteDocument, as format: ExportFormat) throws -> URL? {
         let exportDirectory = try exportsDirectory()
         let safeTitle = note.title.replacingOccurrences(of: "/", with: "-")
         let destination = exportDirectory.appendingPathComponent("\(safeTitle).\(format.fileExtension)")
@@ -434,6 +499,14 @@ final class NotesStore: ObservableObject {
             }
         }
         .joined(separator: "\n")
+    }
+
+    private func descendantNoteIDs(for noteID: UUID) -> [UUID] {
+        let childIDs = notes
+            .filter { $0.parentID == noteID }
+            .map(\.id)
+
+        return childIDs + childIDs.flatMap { descendantNoteIDs(for: $0) }
     }
 
     private func openSelectedInTabs() {
@@ -621,30 +694,6 @@ extension ImportedFilePayload.FileKind {
             self = .image
         default:
             return nil
-        }
-    }
-}
-
-enum WorkspaceView: String, CaseIterable, Identifiable {
-    case allNotes
-    case favorites
-    case assignments
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .allNotes: "All Notes"
-        case .favorites: "Favorites"
-        case .assignments: "Assignments"
-        }
-    }
-
-    var icon: String {
-        switch self {
-        case .allNotes: "doc.text"
-        case .favorites: "star"
-        case .assignments: "tablecells"
         }
     }
 }

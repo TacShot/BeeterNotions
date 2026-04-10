@@ -12,7 +12,6 @@ struct BeeterNotionsApp: App {
                     await store.load()
                 }
         }
-        .windowResizability(.contentSize)
         .defaultSize(width: 1480, height: 920)
         .commands {
             AppCommands()

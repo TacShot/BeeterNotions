@@ -50,23 +50,10 @@ private struct AppSidebarView: View {
             searchField
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("Workspace")
+                Text("Views")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-
-                sidebarAction("All Notes", icon: "doc.text", isActive: store.activePane == .workspace && store.selectedView == .allNotes) {
-                    store.activePane = .workspace
-                    store.selectedView = .allNotes
-                    store.browserMode = .table
-                }
-                sidebarAction("Favorites", icon: "star", isActive: store.activePane == .workspace && store.selectedView == .favorites) {
-                    store.activePane = .workspace
-                    store.selectedView = .favorites
-                }
-                sidebarAction("Assignments", icon: "tablecells", isActive: store.activePane == .workspace && store.selectedView == .assignments) {
-                    store.activePane = .workspace
-                    store.selectedView = .assignments
-                }
+                BrowserModePicker(compact: false)
             }
 
             Divider()
@@ -97,10 +84,22 @@ private struct AppSidebarView: View {
 
             Divider()
 
-            sidebarAction("Settings", icon: "gearshape", isActive: store.activePane == .settings) {
+            Button {
                 store.activePane = .settings
                 store.selectedNoteID = nil
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "gearshape")
+                    Text("Settings")
+                    Spacer()
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(store.activePane == .settings ? UITheme.selection : .clear)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
             }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
 
             Button {
                 store.createNote()
@@ -134,22 +133,33 @@ private struct AppSidebarView: View {
         }
     }
 
-    private func sidebarAction(_ title: String, icon: String, isActive: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: icon)
-                Text(title)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer()
+}
+
+private struct BrowserModePicker: View {
+    @EnvironmentObject private var store: NotesStore
+    let compact: Bool
+
+    var body: some View {
+        HStack(spacing: compact ? 10 : 12) {
+            ForEach(BrowserMode.allCases) { mode in
+                Button {
+                    store.activePane = .workspace
+                    store.browserMode = mode
+                } label: {
+                    Image(systemName: mode.icon)
+                        .font(.system(size: store.browserMode == mode ? (compact ? 16 : 18) : (compact ? 13 : 15), weight: store.browserMode == mode ? .semibold : .regular))
+                        .frame(width: compact ? 34 : 40, height: compact ? 34 : 40)
+                        .background(store.browserMode == mode ? UITheme.selection : UITheme.elevated)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 10)
+                                .stroke(UITheme.border.opacity(store.browserMode == mode ? 0.18 : 0.35), lineWidth: 1)
+                        }
+                }
+                .buttonStyle(.plain)
+                .help(mode.title)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
-            .background(isActive ? UITheme.selection : .clear)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(.primary)
     }
 }
 
@@ -228,9 +238,23 @@ private struct PageTreeRow: View {
 
                     Image(systemName: note.icon)
                         .foregroundStyle(.secondary)
-                    Text(note.title)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    if store.renamingNoteID == note.id, let binding = store.noteBinding(for: note.id) {
+                        TextField(
+                            "Untitled",
+                            text: Binding(
+                                get: { binding.wrappedValue.title },
+                                set: { binding.wrappedValue.title = $0 }
+                            ),
+                            onCommit: {
+                                store.renameNote(noteID: note.id, to: binding.wrappedValue.title)
+                            }
+                        )
+                        .textFieldStyle(.plain)
+                    } else {
+                        Text(note.title)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
                     Spacer()
                 }
                 .padding(.leading, CGFloat(level) * 14)
@@ -240,6 +264,24 @@ private struct PageTreeRow: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
+            .contextMenu {
+                Button("Rename") {
+                    store.renamingNoteID = note.id
+                }
+                Button("Export HTML") {
+                    _ = try? store.export(noteID: note.id, as: .html)
+                }
+                Button("Backup JSON") {
+                    _ = try? store.export(noteID: note.id, as: .json)
+                }
+                Divider()
+                Button("Archive") {
+                    store.archiveNote(noteID: note.id)
+                }
+                Button("Delete", role: .destructive) {
+                    store.deleteNotePermanently(noteID: note.id)
+                }
+            }
 
             if isExpanded {
                 ForEach(children) { child in
@@ -315,7 +357,7 @@ private struct PagesBrowserView: View {
         VStack(alignment: .leading, spacing: 0) {
             BrowserHeader()
 
-            Text(store.selectedView.title)
+            Text("All Notes")
                 .font(.system(size: 34, weight: .bold))
                 .padding(.horizontal, 24)
                 .padding(.top, 22)
@@ -325,24 +367,10 @@ private struct PagesBrowserView: View {
                 .padding(.horizontal, 24)
                 .padding(.top, 4)
 
-            Picker("View", selection: $store.selectedView) {
-                ForEach(WorkspaceView.allCases) { view in
-                    Text(view.title).tag(view)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 24)
-            .padding(.top, 18)
-            .padding(.bottom, 10)
-
-            Picker("Browser Mode", selection: $store.browserMode) {
-                ForEach(BrowserMode.allCases) { mode in
-                    Label(mode.title, systemImage: mode.icon).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 24)
-            .padding(.bottom, 18)
+            BrowserModePicker(compact: true)
+                .padding(.horizontal, 24)
+                .padding(.top, 18)
+                .padding(.bottom, 18)
 
             Group {
                 switch store.browserMode {
@@ -640,19 +668,55 @@ private struct PagesTableBrowser: View {
     var body: some View {
         Table(store.visibleNotes, selection: $store.selectedNoteID) {
             TableColumn("Title") { note in
-                TableTitleCell(noteID: note.id)
+                if let binding = store.noteBinding(for: note.id) {
+                    TableTitleCell(
+                        note: binding,
+                        childCount: store.childNotes(of: note.id).count,
+                        openAction: { store.open(noteID: note.id) }
+                    )
+                }
             }
             TableColumn("Course") { note in
-                EditableNoteTextCell(noteID: note.id, keyPath: \.properties.course, placeholder: "Untitled")
+                if let binding = store.noteBinding(for: note.id) {
+                    EditableNoteTextCell(
+                        text: Binding(
+                            get: { binding.wrappedValue.properties.course },
+                            set: { binding.wrappedValue.properties.course = $0 }
+                        ),
+                        placeholder: "Untitled"
+                    )
+                }
             }
             TableColumn("Date") { note in
-                EditableNoteDateCell(noteID: note.id)
+                if let binding = store.noteBinding(for: note.id) {
+                    EditableNoteDateCell(
+                        date: Binding(
+                            get: { binding.wrappedValue.properties.dueDate ?? .now },
+                            set: { binding.wrappedValue.properties.dueDate = $0 }
+                        )
+                    )
+                }
             }
             TableColumn("Status") { note in
-                EditableNoteStatusCell(noteID: note.id)
+                if let binding = store.noteBinding(for: note.id) {
+                    EditableNoteStatusCell(
+                        status: Binding(
+                            get: { binding.wrappedValue.properties.status },
+                            set: { binding.wrappedValue.properties.status = $0 }
+                        )
+                    )
+                }
             }
             TableColumn("Summary") { note in
-                EditableNoteTextCell(noteID: note.id, keyPath: \.properties.summary, placeholder: "No summary")
+                if let binding = store.noteBinding(for: note.id) {
+                    EditableNoteTextCell(
+                        text: Binding(
+                            get: { binding.wrappedValue.properties.summary },
+                            set: { binding.wrappedValue.properties.summary = $0 }
+                        ),
+                        placeholder: "No summary"
+                    )
+                }
             }
         }
         .tableStyle(.inset(alternatesRowBackgrounds: false))
@@ -665,94 +729,66 @@ private struct PagesTableBrowser: View {
 }
 
 private struct TableTitleCell: View {
-    let noteID: UUID
-    @EnvironmentObject private var store: NotesStore
+    @Binding var note: NoteDocument
+    let childCount: Int
+    let openAction: () -> Void
     @State private var isHovering = false
 
     var body: some View {
-        if let note = store.notes.first(where: { $0.id == noteID }) {
-            HStack(spacing: 10) {
-                Image(systemName: note.icon)
-                    .foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(note.title)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    if !store.childNotes(of: note.id).isEmpty {
-                        Text("\(store.childNotes(of: note.id).count) subpages")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                Spacer()
-                if isHovering {
-                    Button("Open") {
-                        store.open(noteID: note.id)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+        HStack(spacing: 10) {
+            Image(systemName: note.icon)
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 4) {
+                TextField("Untitled", text: $note.title)
+                    .textFieldStyle(.plain)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.primary)
+                if childCount > 0 {
+                    Text("\(childCount) subpages")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                isHovering = hovering
+            Spacer()
+            if isHovering {
+                Button("Open") {
+                    openAction()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
             }
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isHovering = hovering
         }
     }
 }
 
 private struct EditableNoteTextCell: View {
-    let noteID: UUID
-    let keyPath: WritableKeyPath<NoteDocument, String>
+    @Binding var text: String
     let placeholder: String
-    @EnvironmentObject private var store: NotesStore
 
     var body: some View {
-        if let binding = store.noteBinding(for: noteID) {
-            TextField(
-                placeholder,
-                text: Binding(
-                    get: { binding.wrappedValue[keyPath: keyPath] },
-                    set: { binding.wrappedValue[keyPath: keyPath] = $0 }
-                )
-            )
+        TextField(placeholder, text: $text)
             .textFieldStyle(.plain)
-        }
     }
 }
 
 private struct EditableNoteDateCell: View {
-    let noteID: UUID
-    @EnvironmentObject private var store: NotesStore
+    @Binding var date: Date
 
     var body: some View {
-        if let binding = store.noteBinding(for: noteID) {
-            DatePicker(
-                "",
-                selection: Binding(
-                    get: { binding.wrappedValue.properties.dueDate ?? .now },
-                    set: { binding.wrappedValue.properties.dueDate = $0 }
-                ),
-                displayedComponents: .date
-            )
+        DatePicker("", selection: $date, displayedComponents: .date)
             .labelsHidden()
-        }
     }
 }
 
 private struct EditableNoteStatusCell: View {
-    let noteID: UUID
-    @EnvironmentObject private var store: NotesStore
+    @Binding var status: NoteStatus
 
     var body: some View {
-        if let binding = store.noteBinding(for: noteID) {
-            InlineStatusBadgeMenu(status: Binding(
-                get: { binding.wrappedValue.properties.status },
-                set: { binding.wrappedValue.properties.status = $0 }
-            ))
-        }
+        InlineStatusBadgeMenu(status: $status)
     }
 }
 
